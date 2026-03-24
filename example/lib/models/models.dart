@@ -3,13 +3,13 @@
 import 'package:ultralytics_yolo/models/yolo_task.dart';
 
 enum ModelType {
-  detect('yolo11n', YOLOTask.detect),
+  detect('exp_yolo26m_epi_negative_float32', YOLOTask.detect),
   segment('yolo11n-seg', YOLOTask.segment),
   classify('yolo11n-cls', YOLOTask.classify),
   pose('yolo11n-pose', YOLOTask.pose),
   obb('yolo11n-obb', YOLOTask.obb);
 
-  final String modelName;
+  final String modelName; 
 
   final YOLOTask task;
 

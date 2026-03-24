@@ -255,144 +255,118 @@ class ObjectDetector(
 
     /**
      * Main inference method
-     * - Preprocessing: resize bitmap (scaledBitmap) → getPixels → inputBuffer
-     * - TFLite run
-     * - Postprocessing (NMS via JNI, etc.)
      * @param bitmap Input bitmap to process
      * @param origWidth Original width of the source image
      * @param origHeight Original height of the source image
      * @param rotateForCamera Whether this is a camera feed that requires rotation (true) or a single image (false)
-     * @return YOLOResult containing detection results
+     * @param isLandscape Whether the device is in landscape orientation
      */
     override fun predict(bitmap: Bitmap, origWidth: Int, origHeight: Int, rotateForCamera: Boolean, isLandscape: Boolean): YOLOResult {
         val overallStartTime = System.nanoTime()
-        var stageStartTime = System.nanoTime()
+        var stageStartTime = overallStartTime
 
-        // ======== Preprocessing: Convert Bitmap to ByteBuffer via TensorImage ========
-        Log.d(TAG, "Predict Start: Preprocessing")
-        // 1. Resize to input size (using createScaledBitmap instead of the original scaledBitmap)
-//        val resizedBitmap = Bitmap.createScaledBitmap(bitmap, inputSize.width, inputSize.height, false)
-
-        // 2. Load into TensorImage - reuse tensorImage if possible
-        val tensorImage = TensorImage(DataType.FLOAT32)
-        tensorImage.load(bitmap)
-
-        // 3. Normalization & casting via ImageProcessor (equivalent to [pixel/255])
-        // Apply rotation for camera frames, process without rotation for single images
-        // Clear inputBuffer before reuse to avoid memory leaks
         inputBuffer.clear()
-        
+
         val processedImage = if (rotateForCamera) {
-            // Use appropriate camera processor based on orientation
-            if (isLandscape) {
-                imageProcessorCameraLandscape.process(tensorImage)
-            } else {
-                // Use different rotation for front vs back camera
-                if (isFrontCamera) {
-                    imageProcessorCameraPortraitFront.process(tensorImage)
-                } else {
-                    imageProcessorCameraPortrait.process(tensorImage)
-                }
-            }
+            val tensorImage = TensorImage(DataType.FLOAT32)
+            tensorImage.load(bitmap)
+            val proc = if (isLandscape) imageProcessorCameraLandscape
+                else if (isFrontCamera) imageProcessorCameraPortraitFront
+                else imageProcessorCameraPortrait
+            proc.process(tensorImage)
         } else {
-            // Use single image processor (no rotation) for regular images
+            val tensorImage = TensorImage(DataType.FLOAT32)
+            tensorImage.load(bitmap)
             imageProcessorSingleImage.process(tensorImage)
         }
-        
-        // Reuse our direct ByteBuffer instead of the processedImage.buffer
+
         inputBuffer.put(processedImage.buffer)
         inputBuffer.rewind()
-        
-        var preprocessTimeMs = (System.nanoTime() - stageStartTime) / 1_000_000.0
+
+        val preprocessTimeMs = (System.nanoTime() - stageStartTime) / 1_000_000.0
         Log.d(TAG, "Predict Stage: Preprocessing done in $preprocessTimeMs ms")
         stageStartTime = System.nanoTime()
 
-        // ======== Inference ============
         Log.d(TAG, "Predict Start: Inference")
         interpreter.run(inputBuffer, rawOutput)
-        var inferenceTimeMs = (System.nanoTime() - stageStartTime) / 1_000_000.0
+        val inferenceTimeMs = (System.nanoTime() - stageStartTime) / 1_000_000.0
         Log.d(TAG, "Predict Stage: Inference done in $inferenceTimeMs ms")
         stageStartTime = System.nanoTime()
 
-        // ======== Post-processing (same as existing code) ============
         Log.d(TAG, "Predict Start: Postprocessing")
-        // val postStart = System.nanoTime() // This was previously here, now using stageStartTime
-        val outHeight = rawOutput[0].size      // out1
-        val outWidth = rawOutput[0][0].size      // out2
-        val shape = interpreter.getOutputTensor(0).shape() // example: [1, 84, 8400]
-        Log.d("TFLite", "Output shape: " + shape.contentToString())
+        val outHeight = rawOutput[0].size
+        val outWidth = rawOutput[0][0].size
+        val shape = interpreter.getOutputTensor(0).shape()
+        Log.d(TAG, "Output shape: ${shape.contentToString()}")
 
-//        // Transpose output ([1][c][w] → [w][c])
-//        for (i in 0 until outHeight) {
-//            for (j in 0 until outWidth) {
-//                predictions[j][i] = rawOutput[0][i][j]
-//            }
-//        }
-//
-//        val outHeight = rawOutput[0].size      // out1
-//        val outWidth = rawOutput[0][0].size      // out2
-        val resultBoxes = postprocess(
-            rawOutput[0],
-            w = outWidth,   // width is out2
-            h = outHeight,  // height is out1
-            confidenceThreshold = confidenceThreshold,
-            iouThreshold = iouThreshold,
-            numItemsThreshold = numItemsThreshold,
-            numClasses = labels.size
-        )
-        for ((index, boxArray) in resultBoxes.withIndex()) {
-            Log.d(TAG, "Postprocess result - Box $index: ${boxArray.joinToString(", ")}")
+        val mw = inputSize.width.toFloat()
+        val mh = inputSize.height.toFloat()
+
+        // YOLO26 e2e: [1, 300, 6] = [x1,y1,x2,y2,conf,class] em pixels. JNI causa crash!
+        val isE2E = outWidth == 6 && outHeight in 200..500
+
+        val resultBoxes = if (isE2E) {
+            postprocessE2E(rawOutput[0], confidenceThreshold, numItemsThreshold)
+        } else {
+            for (i in 0 until outHeight) {
+                for (j in 0 until outWidth) {
+                    predictions[j][i] = rawOutput[0][i][j]
+                }
+            }
+            postprocess(predictions, outHeight, outWidth, confidenceThreshold, iouThreshold, numItemsThreshold, labels.size)
         }
-        // Convert to Box list
+
         val boxes = mutableListOf<Box>()
         for (boxArray in resultBoxes) {
-            if (boxArray.size >= 6) {
-                // Create xywh (absolute pixel coordinates)
-                val rect = RectF(
-                    boxArray[0] * origWidth,                    // x
-                    boxArray[1] * origHeight,                   // y
-                    (boxArray[0] + boxArray[2]) * origWidth,    // right
-                    (boxArray[1] + boxArray[3]) * origHeight    // bottom
-                )
-                
-                // Create xywhn (normalized coordinates 0-1)
-                val normRect = RectF(
-                    boxArray[0],                    // normalized x
-                    boxArray[1],                    // normalized y
-                    boxArray[0] + boxArray[2],      // normalized right
-                    boxArray[1] + boxArray[3]       // normalized bottom
-                )
-                
-                // Ensure coordinates are valid
-                if (rect.left >= 0 && rect.top >= 0 && 
-                    rect.right <= origWidth && rect.bottom <= origHeight &&
-                    rect.width() > 0 && rect.height() > 0) {
-                    
-                    val classIdx = boxArray[5].toInt()
-                    val label = if (classIdx in labels.indices) labels[classIdx] else "Unknown"
-                    boxes.add(Box(classIdx, label, boxArray[4], rect, normRect))
-                }
+            if (boxArray.size < 6) continue
+            val conf = boxArray[4]
+            val classIdx = boxArray[5].toInt()
+
+            val left: Float
+            val top: Float
+            val right: Float
+            val bottom: Float
+            if (isE2E) {
+                val x1 = boxArray[0]; val y1 = boxArray[1]
+                val x2 = boxArray[2]; val y2 = boxArray[3]
+                // Ultralytics e2e: coordenadas em espaço do input (pixels) ou 0-1
+                val scaleX = if (x2 <= 1f && y2 <= 1f) origWidth.toFloat() else origWidth / mw
+                val scaleY = if (x2 <= 1f && y2 <= 1f) origHeight.toFloat() else origHeight / mh
+                left = (x1 * scaleX).coerceIn(0f, origWidth.toFloat())
+                top = (y1 * scaleY).coerceIn(0f, origHeight.toFloat())
+                right = (x2 * scaleX).coerceIn(0f, origWidth.toFloat())
+                bottom = (y2 * scaleY).coerceIn(0f, origHeight.toFloat())
+            } else {
+                val x1 = boxArray[0]; val y1 = boxArray[1]
+                val x2 = boxArray[2]; val y2 = boxArray[3]
+                left = (x1 * origWidth).coerceIn(0f, origWidth.toFloat())
+                top = (y1 * origHeight).coerceIn(0f, origHeight.toFloat())
+                right = (x2 * origWidth).coerceIn(0f, origWidth.toFloat())
+                bottom = (y2 * origHeight).coerceIn(0f, origHeight.toFloat())
+            }
+
+            val rect = RectF(left, top, right, bottom)
+            val normRect = RectF(left / origWidth, top / origHeight, right / origWidth, bottom / origHeight)
+
+            if (rect.width() > 1f && rect.height() > 1f) {
+                val label = if (classIdx in labels.indices) labels[classIdx] else "class_$classIdx"
+                boxes.add(Box(classIdx, label, conf, rect, normRect))
             }
         }
 
-        // val postEnd = System.nanoTime() // This was previously here, now using stageStartTime for end of postprocess
-        var postprocessTimeMs = (System.nanoTime() - stageStartTime) / 1_000_000.0
-        Log.d(TAG, "Predict Stage: Postprocessing done in $postprocessTimeMs ms")
-
+        val postprocessTimeMs = (System.nanoTime() - stageStartTime) / 1_000_000.0
         val totalMs = (System.nanoTime() - overallStartTime) / 1_000_000.0
         Log.d(TAG, "Predict Total time: $totalMs ms (Pre: $preprocessTimeMs, Inf: $inferenceTimeMs, Post: $postprocessTimeMs)")
 
-        updateTiming() // This updates t0, t1, t2, t3, t4 based on its own logic
-
+        updateTiming()
         return YOLOResult(
             origShape = com.ultralytics.yolo.Size(origWidth, origHeight),
             boxes = boxes,
-            speed = totalMs, // Actual processing time in milliseconds for this frame
-            fps = if (t4 > 0.0) 1.0 / t4 else 0.0, // Smoothed FPS from BasePredictor (t4 is smoothed dt)
+            speed = totalMs,
+            fps = if (t4 > 0.0) 1.0 / t4 else 0.0,
             names = labels
         )
     }
-
     // Thresholds (like setConfidenceThreshold, setIouThreshold in TFLiteDetector)
     private var confidenceThreshold = 0.25f
     private var iouThreshold = 0.4f
@@ -419,6 +393,17 @@ class ObjectDetector(
     override fun setNumItemsThreshold(n: Int) {
         numItemsThreshold = n
         super.setNumItemsThreshold(n)
+    }
+
+    /** E2E format [N,6]: x1,y1,x2,y2,conf,class. Coordenadas podem ser 0-1 (norm) ou pixels. Ordena por confiança. */
+    private fun postprocessE2E(raw: Array<FloatArray>, confThr: Float, maxDet: Int): Array<FloatArray> {
+        val out = mutableListOf<FloatArray>()
+        for (row in raw) {
+            if (row.size < 6) continue
+            if (row[4] < confThr) continue
+            out.add(floatArrayOf(row[0], row[1], row[2], row[3], row[4], row[5]))
+        }
+        return out.sortedByDescending { it[4] }.take(maxDet).toTypedArray()
     }
 
     // Post-processing via JNI

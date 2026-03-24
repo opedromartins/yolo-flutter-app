@@ -1,6 +1,8 @@
 // Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
 
 import 'package:flutter/material.dart';
+import 'single_image_screen.dart';
+import 'batch_inference_screen.dart';
 import '../controllers/camera_inference_controller.dart';
 import '../widgets/camera_inference_content.dart';
 import '../widgets/camera_inference_overlay.dart';
@@ -68,7 +70,31 @@ class _CameraInferenceScreenState extends State<CameraInferenceScreen> {
         MediaQuery.of(context).orientation == Orientation.landscape;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('YOLO Camera Inference')),
+      appBar: AppBar(
+        title: const Text('YOLO Camera Inference'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.image),
+            tooltip: 'Imagem única',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => const SingleImageScreen(),
+              ),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.photo_library),
+            tooltip: 'Dataset valid - Inferência em lote',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => const BatchInferenceScreen(),
+              ),
+            ),
+          ),
+        ],
+      ),
       body: ListenableBuilder(
         listenable: _controller,
         builder: (context, child) {
