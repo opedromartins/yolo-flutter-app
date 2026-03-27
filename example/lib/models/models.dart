@@ -7,7 +7,10 @@ enum ModelType {
   segment('yolo11n-seg', YOLOTask.segment),
   classify('yolo11n-cls', YOLOTask.classify),
   pose('yolo11n-pose', YOLOTask.pose),
-  obb('yolo11n-obb', YOLOTask.obb);
+  obb('yolo11n-obb', YOLOTask.obb),
+  customFloat32('model_float32', YOLOTask.detect),                   
+  customFloat16('model_float16', YOLOTask.detect),                   
+  customInt8('model_int8', YOLOTask.detect);  
 
   final String modelName;
 

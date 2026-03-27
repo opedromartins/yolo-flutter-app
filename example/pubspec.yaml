@@ -16,6 +16,7 @@ dependencies:
   path_provider: ^2.0.0
   archive: ^3.0.0
   http: ^1.0.0
+  share_plus: ^7.0.0
 
   ultralytics_yolo:
     path: ../
