@@ -33,6 +33,10 @@ class _SingleImageScreenState extends State<SingleImageScreen> {
   bool _isModelReady = false;
   late final ModelManager _modelManager;
 
+  /// Última inferência: tempo só de `predict` (ms) e FPS equivalente.
+  double? _lastInferenceMs;
+  double? _lastInferenceFps;
+
   @override
   void initState() {
     super.initState();
@@ -44,7 +48,11 @@ class _SingleImageScreenState extends State<SingleImageScreen> {
   Future<void> _initializeYOLO() async {
     _modelPath = await _modelManager.getModelPath(ModelType.detect);
     if (_modelPath == null) return;
-    _yolo = YOLO(modelPath: _modelPath!, task: YOLOTask.detect);
+    _yolo = YOLO(
+      modelPath: _modelPath!,
+      task: YOLOTask.detect,
+      useGpu: !Platform.isAndroid,
+    );
     try {
       await _yolo.loadModel();
       if (mounted) setState(() => _isModelReady = true);
@@ -67,9 +75,15 @@ class _SingleImageScreenState extends State<SingleImageScreen> {
     final file = await _picker.pickImage(source: ImageSource.gallery);
     if (file == null) return;
     final bytes = await file.readAsBytes();
+    final sw = Stopwatch()..start();
     final result = await _yolo.predict(bytes);
+    sw.stop();
+    final ms = sw.elapsedMicroseconds / 1000.0;
+    final fps = ms > 0 ? 1000.0 / ms : 0.0;
     if (mounted) {
       setState(() {
+        _lastInferenceMs = ms;
+        _lastInferenceFps = fps;
         _detections = result['boxes'] is List
             ? MapConverter.convertBoxesList(result['boxes'] as List)
             : [];
@@ -128,6 +142,17 @@ class _SingleImageScreenState extends State<SingleImageScreen> {
                       child: Image.memory(_annotatedImage ?? _imageBytes!),
                     ),
                   const SizedBox(height: 10),
+                  if (_lastInferenceMs != null) ...[
+                    Text(
+                      'Inferência: ${_lastInferenceMs!.toStringAsFixed(1)} ms · '
+                      '${_lastInferenceFps!.toStringAsFixed(1)} FPS',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 15,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
                   const Text('Detections:'),
                   Text(_detections.toString()),
                 ],

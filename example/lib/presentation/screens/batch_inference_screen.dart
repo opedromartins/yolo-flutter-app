@@ -38,6 +38,9 @@ class _BatchInferenceScreenState extends State<BatchInferenceScreen> {
   int _processedCount = 0;
   int _totalCount = 0;
 
+  /// Resumo do último lote: tempo só de `predict` (ms) e FPS equivalente (1000/avg).
+  Map<String, double>? _timingSummary;
+
   @override
   void initState() {
     super.initState();
@@ -49,7 +52,11 @@ class _BatchInferenceScreenState extends State<BatchInferenceScreen> {
       final modelPath = await _modelManager.getModelPath(ModelType.detect);
       if (modelPath == null || !mounted) return;
 
-      _yolo = YOLO(modelPath: modelPath, task: YOLOTask.detect);
+      _yolo = YOLO(
+        modelPath: modelPath,
+        task: YOLOTask.detect,
+        useGpu: !Platform.isAndroid,
+      );
       await _yolo!.loadModel();
 
       if (mounted) {
@@ -177,12 +184,14 @@ class _BatchInferenceScreenState extends State<BatchInferenceScreen> {
     setState(() {
       _isRunning = true;
       _results.clear();
+      _timingSummary = null;
       _totalCount = filePaths.length;
       _processedCount = 0;
       _progress = 0.0;
     });
 
     final allResults = <Map<String, dynamic>>[];
+    final inferenceTimesMs = <double>[];
     final outputDir = await getApplicationDocumentsDirectory();
     final timestamp =
         DateTime.now().toIso8601String().replaceAll(':', '-').split('.').first;
@@ -204,7 +213,11 @@ class _BatchInferenceScreenState extends State<BatchInferenceScreen> {
 
         try {
           final bytes = await file.readAsBytes();
+          final sw = Stopwatch()..start();
           final predictResult = await _yolo!.predict(bytes);
+          sw.stop();
+          final inferenceMs = sw.elapsedMicroseconds / 1000.0;
+          inferenceTimesMs.add(inferenceMs);
 
           final boxes = predictResult['boxes'] is List
               ? MapConverter.convertBoxesList(predictResult['boxes'] as List)
@@ -214,6 +227,7 @@ class _BatchInferenceScreenState extends State<BatchInferenceScreen> {
             'file': file.path.split(RegExp(r'[/\\]')).last,
             'path': file.path,
             'detections': boxes.length,
+            'inference_time_ms': inferenceMs,
             'boxes': boxes,
           });
         } catch (e) {
@@ -227,19 +241,53 @@ class _BatchInferenceScreenState extends State<BatchInferenceScreen> {
         setState(() => _processedCount = i + 1);
       }
 
+      Map<String, double>? summary;
+      if (inferenceTimesMs.isNotEmpty) {
+        final sum = inferenceTimesMs.reduce((a, b) => a + b);
+        final avg = sum / inferenceTimesMs.length;
+        summary = {
+          'avg_ms': avg,
+          'min_ms': inferenceTimesMs.reduce((a, b) => a < b ? a : b),
+          'max_ms': inferenceTimesMs.reduce((a, b) => a > b ? a : b),
+          'fps': 1000.0 / avg,
+        };
+      }
+
       if (mounted && allResults.isNotEmpty) {
+        final payload = <String, dynamic>{
+          'results': allResults,
+          if (summary != null)
+            'summary': {
+              ...summary,
+              'images_timed': inferenceTimesMs.length,
+              'images_total': allResults.length,
+            },
+        };
         await resultsFile.writeAsString(
-          const JsonEncoder.withIndent('  ').convert(allResults),
+          const JsonEncoder.withIndent('  ').convert(payload),
           encoding: utf8,
         );
+        final avgStr = summary != null
+            ? ' | média ${summary['avg_ms']!.toStringAsFixed(1)} ms · '
+                '${summary['fps']!.toStringAsFixed(1)} FPS'
+            : '';
         setState(() {
           _outputPath = resultsFile.path;
           _results.addAll(allResults);
+          _timingSummary = summary;
           _status =
-              'Concluído! ${allResults.length} imagens do dataset valid processadas.';
+              'Concluído! ${allResults.length} imagens processadas$avgStr.';
           _isRunning = false;
         });
         _showSnackBar('Resultados salvos');
+      } else if (mounted) {
+        setState(() {
+          _timingSummary = summary;
+          _status = allResults.isEmpty
+              ? 'Nenhuma imagem processada.'
+              : 'Concluído sem arquivo (lista vazia).';
+          _isRunning = false;
+        });
       }
     } catch (e) {
       if (mounted) {
@@ -303,6 +351,21 @@ class _BatchInferenceScreenState extends State<BatchInferenceScreen> {
                   children: [
                     Text(_status,
                         style: Theme.of(context).textTheme.bodyLarge),
+                    if (_timingSummary != null && !_isRunning) ...[
+                      const SizedBox(height: 10),
+                      Text(
+                        'Tempo de inferência (predict): '
+                        'média ${_timingSummary!['avg_ms']!.toStringAsFixed(1)} ms · '
+                        'min ${_timingSummary!['min_ms']!.toStringAsFixed(1)} · '
+                        'max ${_timingSummary!['max_ms']!.toStringAsFixed(1)} · '
+                        '${_timingSummary!['fps']!.toStringAsFixed(1)} FPS',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: Colors.blueGrey.shade800,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
                     if (_isRunning) ...[
                       const SizedBox(height: 12),
                       LinearProgressIndicator(value: _progress),
@@ -379,7 +442,17 @@ class _BatchInferenceScreenState extends State<BatchInferenceScreen> {
                       dense: true,
                       title: Text(r['file'] ?? 'Imagem ${i + 1}',
                           overflow: TextOverflow.ellipsis),
-                      subtitle: Text(error != null ? 'Erro' : '$detections detecções'),
+                      subtitle: Text(
+                        error != null
+                            ? 'Erro'
+                            : () {
+                                final ms = r['inference_time_ms'];
+                                final msStr = ms is num
+                                    ? ms.toDouble().toStringAsFixed(1)
+                                    : '?';
+                                return '$detections detecções · $msStr ms';
+                              }(),
+                      ),
                       trailing: Icon(
                         error != null ? Icons.error : Icons.check_circle,
                         color: error != null ? Colors.red : Colors.green,
