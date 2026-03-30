@@ -9,6 +9,7 @@ App Flutter para testar e benchmarkar modelos YOLO customizados em dispositivos 
 - **Camera Inference** — inferência em tempo real pela câmera com FPS ao vivo
 - **Single Image** — inferência em uma imagem por vez da galeria
 - **Benchmark** — processa múltiplas imagens, mede tempo de inferência e exporta resultados em CSV
+- **Inferência em lote (dataset)** — a partir da tela da câmera (ícone de galeria no canto superior direito): pasta ou imagens, escolha de modelo, exportação de JSON e CSV de tempos; no PC, métricas de deteção (P/R, mAP) com `example/scripts/compute_metrics.py`
 
 ---
 
@@ -242,6 +243,73 @@ model_float32,82,41.9,35.1,58.3,23.8,190,2.3
 
 ---
 
+## 10. Inferência em lote, CSV de tempo e métricas no PC (`compute_metrics.py`)
+
+Fluxo: **inferir no app (lote)** → **exportar JSON (e opcionalmente CSV de tempos)** → **calcular métricas de qualidade no computador** com o script Python. O CSV do app mede **desempenho** (latência, FPS); precisão, recall, F1 e mAP vêm do script no PC.
+
+### 10.1. Onde fica no app
+
+1. Tela inicial → **Camera Inference**
+2. Ícone de **galeria / pastas** (canto superior direito) — abre a inferência em lote no dataset
+3. Escolha o **modelo** no dropdown (ex.: `model_float16`, `exp_yolo26m_epi_negative_float32`)
+4. **Selecionar pasta** (Android: gestor de arquivos) ou **Selecionar imagens da galeria**
+
+**Pasta recomendada:** preferir uma pasta que contenha **imagens e labels** juntas (ex.: `valid/` com `images/` e `labels/`), para o app associar `.txt` pelo **nome do arquivo sem extensão**. Se só selecionar `images/`, o JSON ainda terá predições; no PC, o `compute_metrics.py` só encontra GT se o stem do `file` no JSON coincidir com um `.txt` em `--labels`.
+
+### 10.2. Exportar resultados do lote
+
+| Ação | Conteúdo |
+|------|----------|
+| **JSON completo** | `results`, tempos, `summary`, `benchmark_summary` (e campos extras se houver labels no lote) |
+| **JSON só detecções** | `model` + `results` com `file`, `detections`, `inference_time_ms`, `boxes` (ou `error`) |
+| **CSV (cartão Benchmark)** | **Salvar CSV** / **CSV**: uma linha por imagem (`image`, `inference_time_ms`, `detections`); bloco `SUMMARY` com média/mín/máx ms, FPS, detecções, falhas; nome do arquivo tipo `batch_<modelo>_<timestamp>.csv`. Pode haver colunas vazias ou preenchidas para precisão/recall/etc. se labels foram carregadas no app |
+
+Use **compartilhar** para enviar os arquivos ao PC (Download, Drive, USB).
+
+### 10.3. Rodar `compute_metrics.py` no PC
+
+Coloque o JSON exportado e aponte a pasta das labels YOLO (ex.: `.../valid/labels`).
+
+**PowerShell (Windows):** não use `^` para quebrar linhas (isso é do `cmd`). Use uma linha só ou **backtick** `` ` `` no fim de cada linha:
+
+```powershell
+cd caminho\para\yolo-flutter-app\example\scripts
+
+python compute_metrics.py `
+  --inference "D:\caminho\para\resultado.json" `
+  --labels "D:\caminho\para\dataset\css-data\valid\labels"
+```
+
+Exemplo em uma linha:
+
+```powershell
+python compute_metrics.py --inference "D:\resultado.json" --labels "D:\dataset\valid\labels"
+```
+
+| Argumento | Descrição |
+|-----------|-----------|
+| `--inference` / `-i` | Caminho do JSON exportado pelo app |
+| `--labels` / `-l` | Pasta com os `.txt` YOLO |
+| `--iou` | IoU para TP (padrão `0.5`) |
+| `--conf` | Confiança mínima (padrão `0.001`) |
+| `--classes` / `-c` | Opcional — só se o mapa de classes for diferente do padrão do script |
+| `--output` / `-o` | Salvar métricas em JSON |
+| `--debug` | Amostras predição vs GT |
+
+O script já traz um **mapa de classes padrão** (dataset EPI / construction). `--classes` só é necessário se seus IDs/nomes divergirem.
+
+O script usa o **stem** do nome no JSON (`file`) e procura o mesmo stem nos `.txt` (ex.: `foto.jpg` → `foto.txt`). Se TP = 0 e FP > 0, confira nomes, classes e teste `--iou 0.3` e `--debug`.
+
+### 10.4. Resumo do fluxo
+
+1. (Opcional) Copiar dataset com imagens + labels para o celular ou usar `adb push`
+2. App → inferência em lote → pasta com imagens (idealmente `valid` com `images` + `labels`)
+3. Exportar **JSON completo** e, se quiser relatório de tempo, o **CSV** do cartão Benchmark
+4. No PC: `python compute_metrics.py --inference <json> --labels <pasta_labels>`
+5. Opcional: `--output metricas.json`
+
+---
+
 ## Solução de problemas
 
 | Problema | Solução |
@@ -265,6 +333,8 @@ model_float32,82,41.9,35.1,58.3,23.8,190,2.3
 ```
 example/
 ├── android/app/src/main/assets/  ← modelos .tflite aqui
+├── scripts/
+│   └── compute_metrics.py        ← métricas P/R/mAP a partir do JSON do app
 └── lib/
     ├── main.dart                 ← entry point (HomeScreen)
     ├── models/
@@ -272,13 +342,16 @@ example/
     │   └── benchmark_result.dart ← data classes do benchmark
     ├── services/
     │   └── model_manager.dart    ← carregamento de modelos
+    ├── utils/
+    │   └── detection_eval_metrics.dart  ← métricas on-device (opcional no lote)
     └── presentation/
         ├── controllers/
         │   ├── camera_inference_controller.dart
         │   └── benchmark_controller.dart  ← lógica do benchmark
         └── screens/
             ├── home_screen.dart            ← tela inicial
-            ├── camera_inference_screen.dart
+            ├── camera_inference_screen.dart  ← ícone galeria → inferência em lote
             ├── single_image_screen.dart
-            └── benchmark_screen.dart       ← tela de benchmark
+            ├── benchmark_screen.dart       ← tela de benchmark
+            └── batch_inference_screen.dart ← inferência em lote + JSON/CSV
 ```

@@ -9,6 +9,7 @@ import '../../services/model_manager.dart';
 
 class BenchmarkController extends ChangeNotifier {
   static const benchmarkModels = [
+    ModelType.detect, // exp_yolo26m_epi_negative_float32
     ModelType.customFloat32,
     ModelType.customFloat16,
     ModelType.customInt8,
