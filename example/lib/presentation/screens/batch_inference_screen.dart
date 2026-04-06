@@ -82,7 +82,7 @@ class _BatchInferenceScreenState extends State<BatchInferenceScreen> {
       _yolo = YOLO(
         modelPath: modelPath,
         task: _selectedModel.task,
-        useGpu: !Platform.isAndroid,
+        useGpu: true,
       );
       await _yolo!.loadModel();
 
