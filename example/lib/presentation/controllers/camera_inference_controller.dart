@@ -19,7 +19,7 @@ class CameraInferenceController extends ChangeNotifier {
   // Threshold state
   double _confidenceThreshold = 0.5;
   double _iouThreshold = 0.45;
-  int _numItemsThreshold = 30;
+  int _numItemsThreshold = 300;
   SliderType _activeSlider = SliderType.none;
 
   // Model state

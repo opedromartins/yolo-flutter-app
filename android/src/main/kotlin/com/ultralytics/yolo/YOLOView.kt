@@ -221,9 +221,9 @@ class YOLOView @JvmOverloads constructor(
     var onZoomChanged: ((Float) -> Unit)? = null
 
     // detection thresholds (can be changed externally via setters)
-    private var confidenceThreshold = 0.25  // initial value
-    private var iouThreshold = 0.45
-    private var numItemsThreshold = 30
+    private var confidenceThreshold = 0.001  // COCO-eval style (Ultralytics default conf for metrics)
+    private var iouThreshold = 0.7
+    private var numItemsThreshold = 300
     private var showOverlays = true
     private lateinit var zoomLabel: TextView
     private lateinit var cameraButton: TextView
@@ -314,7 +314,7 @@ class YOLOView @JvmOverloads constructor(
                 bottomMargin = 100
                 leftMargin = 50
             }
-            text = "Confidence: 0.50"
+            text = "Confidence: 0.001"
             textSize = 20f
             setTextColor(Color.WHITE)
             setBackgroundColor(Color.argb(200, 200, 100, 0))

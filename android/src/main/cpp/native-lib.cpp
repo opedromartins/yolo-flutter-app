@@ -151,18 +151,37 @@ Java_com_ultralytics_yolo_ObjectDetector_postprocess(
         }
     }
 
-    // Sort by score
-    qsort_descent_inplace(proposals);
+    // Ultralytics-style: NMS per class (class-aware), then merge, sort by score, apply max_det.
+    // Class-agnostic NMS would suppress overlapping boxes of different classes and skew COCO mAP.
+    std::vector<std::vector<DetectedObject>> by_class(static_cast<size_t>(num_classes));
+    for (const auto& p : proposals) {
+        if (p.index >= 0 && p.index < num_classes) {
+            by_class[static_cast<size_t>(p.index)].push_back(p);
+        }
+    }
 
-    // Apply Non-Maximum Suppression (NMS)
-    std::vector<int> picked;
-    nms_sorted_bboxes(proposals, picked, iou_threshold);
+    std::vector<DetectedObject> after_nms;
+    after_nms.reserve(proposals.size());
 
-    int count = std::min((int)picked.size(), (int)num_items_threshold);
+    for (int cls = 0; cls < num_classes; cls++) {
+        std::vector<DetectedObject>& cls_proposals = by_class[static_cast<size_t>(cls)];
+        if (cls_proposals.empty()) continue;
+        qsort_descent_inplace(cls_proposals);
+        std::vector<int> picked;
+        nms_sorted_bboxes(cls_proposals, picked, iou_threshold);
+        for (int idx : picked) {
+            after_nms.push_back(cls_proposals[idx]);
+        }
+    }
+
+    std::sort(after_nms.begin(), after_nms.end(), [](const DetectedObject& a, const DetectedObject& b) {
+        return a.confidence > b.confidence;
+    });
+
+    int count = std::min((int)after_nms.size(), (int)num_items_threshold);
     std::vector<DetectedObject> objects(count);
     for (int i = 0; i < count; i++) {
-        objects[i] = proposals[picked[i]];
-        // No additional conversion needed here for the Java version
+        objects[i] = after_nms[i];
     }
 
     // Return results as 2D array (each element: [x, y, width, height, confidence, class_index])

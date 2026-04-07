@@ -159,7 +159,7 @@ class YOLOPlugin : FlutterPlugin, ActivityAware, MethodChannel.MethodCallHandler
           val instanceId = args?.get("instanceId") as? String ?: "default"
           val useGpu = args?.get("useGpu") as? Boolean ?: true
           val classifierOptionsMap = args?.get("classifierOptions") as? Map<String, Any>
-          var numItemsThreshold = args?.get("numItemsThreshold") as? Int ?: 30
+          var numItemsThreshold = args?.get("numItemsThreshold") as? Int ?: 300
           
           // Resolve the model path (handling absolute paths, internal:// scheme, or asset paths)
           modelPath = resolveModelPath(modelPath)

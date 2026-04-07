@@ -33,9 +33,9 @@ void main() {
     });
 
     test('default values and threshold clamping', () {
-      expect(controller.confidenceThreshold, 0.5);
-      expect(controller.iouThreshold, 0.45);
-      expect(controller.numItemsThreshold, 30);
+      expect(controller.confidenceThreshold, 0.001);
+      expect(controller.iouThreshold, 0.7);
+      expect(controller.numItemsThreshold, 300);
 
       // Test clamping
       controller.setConfidenceThreshold(1.5);
@@ -49,7 +49,7 @@ void main() {
       expect(controller.iouThreshold, 0.0);
 
       controller.setNumItemsThreshold(150);
-      expect(controller.numItemsThreshold, 100);
+      expect(controller.numItemsThreshold, 150);
       controller.setNumItemsThreshold(0);
       expect(controller.numItemsThreshold, 1);
     });

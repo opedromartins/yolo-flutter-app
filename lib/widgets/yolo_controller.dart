@@ -9,9 +9,9 @@ import 'package:ultralytics_yolo/utils/logger.dart';
 class YOLOViewController {
   MethodChannel? _methodChannel;
   int? _viewId;
-  double _confidenceThreshold = 0.5;
-  double _iouThreshold = 0.45;
-  int _numItemsThreshold = 30;
+  double _confidenceThreshold = 0.001;
+  double _iouThreshold = 0.7;
+  int _numItemsThreshold = 300;
 
   double get confidenceThreshold => _confidenceThreshold;
   double get iouThreshold => _iouThreshold;
@@ -67,7 +67,7 @@ class YOLOViewController {
   }
 
   Future<void> setNumItemsThreshold(int numItems) async {
-    _numItemsThreshold = numItems.clamp(1, 100);
+    _numItemsThreshold = numItems.clamp(1, 500);
     if (_methodChannel != null) {
       try {
         await _methodChannel!.invokeMethod('setNumItemsThreshold', {
@@ -91,7 +91,7 @@ class YOLOViewController {
       _iouThreshold = iouThreshold.clamp(0.0, 1.0);
     }
     if (numItemsThreshold != null) {
-      _numItemsThreshold = numItemsThreshold.clamp(1, 100);
+      _numItemsThreshold = numItemsThreshold.clamp(1, 500);
     }
 
     if (_methodChannel != null) {

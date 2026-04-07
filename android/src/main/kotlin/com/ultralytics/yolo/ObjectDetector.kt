@@ -3,60 +3,40 @@
 package com.ultralytics.yolo
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.RectF
 import android.util.Log
-import org.tensorflow.lite.DataType
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.gpu.GpuDelegate
-import org.tensorflow.lite.support.common.FileUtil
-import org.tensorflow.lite.support.common.ops.CastOp
-import org.tensorflow.lite.support.common.ops.NormalizeOp
-import org.tensorflow.lite.support.image.ops.Rot90Op
-import org.tensorflow.lite.support.image.ImageProcessor
-import org.tensorflow.lite.support.image.TensorImage
-import org.tensorflow.lite.support.image.ops.ResizeOp
+import org.tensorflow.lite.nnapi.NnApiDelegate
 import org.tensorflow.lite.support.metadata.MetadataExtractor
-import org.tensorflow.lite.support.metadata.schema.ModelMetadata
 import org.yaml.snakeyaml.Yaml
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import android.content.res.AssetManager
-
-import org.json.JSONObject
-
-import java.io.ByteArrayInputStream
 import java.nio.MappedByteBuffer
 import java.nio.charset.StandardCharsets
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
 
-import java.util.zip.ZipEntry
-import java.util.zip.ZipInputStream
 /**
- * High-performance ObjectDetector that assumes no 90-degree rotation is needed
- * - Performs "resize -> getPixels -> ByteBuffer" in one pass, minimizing Canvas drawing
- * - Reuses Bitmap / ByteBuffer to reduce allocations
- * - Reuses inference output arrays
+ * Object detector with Ultralytics-aligned preprocessing: letterbox (stride-free resize + pad 114)
+ * and the same default thresholds as COCO eval (low conf, NMS IoU 0.7, max detections 300).
  */
 class ObjectDetector(
     context: Context,
     modelPath: String,
     override var labels: List<String>,
     private val useGpu: Boolean = true,
-    private var numItemsThreshold: Int = 30,
+    private var numItemsThreshold: Int = 300,
     private val customOptions: Interpreter.Options? = null
 ) : BasePredictor() {
     // Inference output dimensions
     private var out1 = 0
     private var out2 = 0
-    // Three image processors: camera portrait, camera landscape, and single images
-    private lateinit var imageProcessorCameraPortrait: ImageProcessor
-    private lateinit var imageProcessorCameraPortraitFront: ImageProcessor
-    private lateinit var imageProcessorCameraLandscape: ImageProcessor
-    private lateinit var imageProcessorSingleImage: ImageProcessor
 
-
-//    companion object {
-//
-//    }
     // Reuse inference output array ([1][out1][out2])
     private lateinit var rawOutput: Array<Array<FloatArray>>
     // Transposed array for post-processing
@@ -75,11 +55,16 @@ class ObjectDetector(
 
     // Options for TensorFlow Lite Interpreter
     private val interpreterOptions: Interpreter.Options = (customOptions ?: Interpreter.Options()).apply {
-        // If no custom options provided, use default threads
+        // If no custom options provided, use default threads + XNNPACK (CPU mais rápido)
         if (customOptions == null) {
-            setNumThreads(Runtime.getRuntime().availableProcessors())
+            setNumThreads(Runtime.getRuntime().availableProcessors().coerceIn(1, 8))
+            try {
+                setUseXNNPACK(true)
+            } catch (e: Exception) {
+                Log.w("ObjectDetector", "setUseXNNPACK not applied: ${e.message}")
+            }
         }
-        
+
         // If customOptions is provided, only add GPU delegate if requested
         if (useGpu) {
             try {
@@ -87,6 +72,14 @@ class ObjectDetector(
                 Log.d("ObjectDetector", "GPU delegate is used.")
             } catch (e: Exception) {
                 Log.e("ObjectDetector", "GPU delegate error: ${e.message}")
+            }
+        } else {
+            // GPU desligado: tenta NNAPI (NPU/DSP em muitos telemóveis) — pode falhar em alguns dispositivos
+            try {
+                addDelegate(NnApiDelegate())
+                Log.d("ObjectDetector", "NNAPI delegate is used (useGpu=false).")
+            } catch (e: Exception) {
+                Log.e("ObjectDetector", "NNAPI delegate error: ${e.message}")
             }
         }
     }
@@ -156,39 +149,7 @@ class ObjectDetector(
         // Allocate inference output arrays
         rawOutput = Array(1) { Array(out1) { FloatArray(out2) } }
         predictions = Array(out2) { FloatArray(out1) }
-        
-        // Initialize three image processors:
-        
-        // 1. For camera feed in portrait mode - includes 270-degree rotation
-        imageProcessorCameraPortrait = ImageProcessor.Builder()
-            .add(Rot90Op(3))  // 270-degree rotation (3 * 90 degrees) for back camera
-            .add(ResizeOp(inputSize.height, inputSize.width, ResizeOp.ResizeMethod.BILINEAR))
-            .add(NormalizeOp(INPUT_MEAN, INPUT_STANDARD_DEVIATION))
-            .add(CastOp(INPUT_IMAGE_TYPE))
-            .build()
-            
-        // 2. For front camera in portrait mode - 90-degree rotation
-        imageProcessorCameraPortraitFront = ImageProcessor.Builder()
-            .add(Rot90Op(1))  // 90-degree rotation for front camera
-            .add(ResizeOp(inputSize.height, inputSize.width, ResizeOp.ResizeMethod.BILINEAR))
-            .add(NormalizeOp(INPUT_MEAN, INPUT_STANDARD_DEVIATION))
-            .add(CastOp(INPUT_IMAGE_TYPE))
-            .build()
-            
-        // 3. For camera feed in landscape mode - no rotation needed
-        imageProcessorCameraLandscape = ImageProcessor.Builder()
-            .add(ResizeOp(inputSize.height, inputSize.width, ResizeOp.ResizeMethod.BILINEAR))
-            .add(NormalizeOp(INPUT_MEAN, INPUT_STANDARD_DEVIATION))
-            .add(CastOp(INPUT_IMAGE_TYPE))
-            .build()
-            
-        // 4. For single images - no rotation needed
-        imageProcessorSingleImage = ImageProcessor.Builder()
-            .add(ResizeOp(inputSize.height, inputSize.width, ResizeOp.ResizeMethod.BILINEAR))
-            .add(NormalizeOp(INPUT_MEAN, INPUT_STANDARD_DEVIATION))
-            .add(CastOp(INPUT_IMAGE_TYPE))
-            .build()
-            
+
         Log.d("TAG", "ObjectDetector initialized.")
     }
 
@@ -253,6 +214,115 @@ class ObjectDetector(
         }
     }
 
+    /** Letterbox metadata matching Ultralytics val: resize + center pad with color 114. */
+    private data class LetterboxParams(
+        val gain: Float,
+        val padX: Float,
+        val padY: Float,
+        val inW: Float,
+        val inH: Float
+    )
+
+    /** Same as TensorFlow Rot90Op(k): k rotations, 90° counter-clockwise each. */
+    private fun rotateK90CounterClockwise(src: Bitmap, k: Int): Bitmap {
+        val kk = ((k % 4) + 4) % 4
+        if (kk == 0) return src
+        val m = Matrix()
+        m.postRotate(-90f * kk)
+        return Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+    }
+
+    /**
+     * Draw letterboxed image on [scaledBitmap], fill [buffer] with RGB float32 /255 (NHWC).
+     */
+    private fun letterboxToInputBuffer(
+        src: Bitmap,
+        outW: Int,
+        outH: Int,
+        buffer: ByteBuffer
+    ): LetterboxParams {
+        val w = src.width.toFloat()
+        val h = src.height.toFloat()
+        val r = min(outW / w, outH / h)
+        val newW = max(1, (w * r).roundToInt())
+        val newH = max(1, (h * r).roundToInt())
+        val padW = outW - newW
+        val padH = outH - newH
+        val padX = padW / 2f
+        val padY = padH / 2f
+
+        val canvas = Canvas(scaledBitmap)
+        canvas.drawColor(Color.rgb(114, 114, 114))
+        val resized = Bitmap.createScaledBitmap(src, newW, newH, true)
+        canvas.drawBitmap(resized, padX, padY, null)
+        if (resized != src) {
+            resized.recycle()
+        }
+
+        buffer.clear()
+        scaledBitmap.getPixels(intValues, 0, outW, 0, 0, outW, outH)
+        var idx = 0
+        for (i in 0 until outH) {
+            for (j in 0 until outW) {
+                val pixel = intValues[idx++]
+                buffer.putFloat(((pixel shr 16) and 0xFF) / 255.0f)
+                buffer.putFloat(((pixel shr 8) and 0xFF) / 255.0f)
+                buffer.putFloat((pixel and 0xFF) / 255.0f)
+            }
+        }
+        buffer.rewind()
+        return LetterboxParams(r, padX, padY, outW.toFloat(), outH.toFloat())
+    }
+
+    private fun mapLetterboxNormXywhToOriginal(
+        x: Float,
+        y: Float,
+        bw: Float,
+        bh: Float,
+        origW: Int,
+        origH: Int,
+        lb: LetterboxParams
+    ): RectF {
+        val x1p = x * lb.inW
+        val y1p = y * lb.inH
+        val x2p = x1p + bw * lb.inW
+        val y2p = y1p + bh * lb.inH
+        val left = ((x1p - lb.padX) / lb.gain).coerceIn(0f, origW.toFloat())
+        val top = ((y1p - lb.padY) / lb.gain).coerceIn(0f, origH.toFloat())
+        val right = ((x2p - lb.padX) / lb.gain).coerceIn(0f, origW.toFloat())
+        val bottom = ((y2p - lb.padY) / lb.gain).coerceIn(0f, origH.toFloat())
+        return RectF(left, top, right, bottom)
+    }
+
+    private fun mapLetterboxE2EToOriginal(
+        x1: Float,
+        y1: Float,
+        x2: Float,
+        y2: Float,
+        origW: Int,
+        origH: Int,
+        lb: LetterboxParams
+    ): RectF {
+        val looksNormalized = x2 <= 1f && y2 <= 1f && x1 <= 1f && y1 <= 1f && x2 >= x1 && y2 >= y1
+        return if (looksNormalized) {
+            val x1p = x1 * lb.inW
+            val y1p = y1 * lb.inH
+            val x2p = x2 * lb.inW
+            val y2p = y2 * lb.inH
+            val left = ((x1p - lb.padX) / lb.gain).coerceIn(0f, origW.toFloat())
+            val top = ((y1p - lb.padY) / lb.gain).coerceIn(0f, origH.toFloat())
+            val right = ((x2p - lb.padX) / lb.gain).coerceIn(0f, origW.toFloat())
+            val bottom = ((y2p - lb.padY) / lb.gain).coerceIn(0f, origH.toFloat())
+            RectF(left, top, right, bottom)
+        } else {
+            val left = ((x1 - lb.padX) / lb.gain).coerceIn(0f, origW.toFloat())
+            val top = ((y1 - lb.padY) / lb.gain).coerceIn(0f, origH.toFloat())
+            val right = ((x2 - lb.padX) / lb.gain).coerceIn(0f, origW.toFloat())
+            val bottom = ((y2 - lb.padY) / lb.gain).coerceIn(0f, origH.toFloat())
+            RectF(left, top, right, bottom)
+        }
+    }
+
     /**
      * Main inference method
      * @param bitmap Input bitmap to process
@@ -265,23 +335,23 @@ class ObjectDetector(
         val overallStartTime = System.nanoTime()
         var stageStartTime = overallStartTime
 
-        inputBuffer.clear()
-
-        val processedImage = if (rotateForCamera) {
-            val tensorImage = TensorImage(DataType.FLOAT32)
-            tensorImage.load(bitmap)
-            val proc = if (isLandscape) imageProcessorCameraLandscape
-                else if (isFrontCamera) imageProcessorCameraPortraitFront
-                else imageProcessorCameraPortrait
-            proc.process(tensorImage)
-        } else {
-            val tensorImage = TensorImage(DataType.FLOAT32)
-            tensorImage.load(bitmap)
-            imageProcessorSingleImage.process(tensorImage)
+        var rotatedBitmap: Bitmap? = null
+        val oriented: Bitmap = when {
+            !rotateForCamera -> bitmap
+            isLandscape -> bitmap
+            else -> {
+                val k = if (isFrontCamera) 1 else 3
+                rotateK90CounterClockwise(bitmap, k).also { rotatedBitmap = it }
+            }
         }
 
-        inputBuffer.put(processedImage.buffer)
-        inputBuffer.rewind()
+        val lb = letterboxToInputBuffer(
+            oriented,
+            inputSize.width,
+            inputSize.height,
+            inputBuffer
+        )
+        rotatedBitmap?.recycle()
 
         val preprocessTimeMs = (System.nanoTime() - stageStartTime) / 1_000_000.0
         Log.d(TAG, "Predict Stage: Preprocessing done in $preprocessTimeMs ms")
@@ -299,21 +369,17 @@ class ObjectDetector(
         val shape = interpreter.getOutputTensor(0).shape()
         Log.d(TAG, "Output shape: ${shape.contentToString()}")
 
-        val mw = inputSize.width.toFloat()
-        val mh = inputSize.height.toFloat()
-
         // YOLO26 e2e: [1, 300, 6] = [x1,y1,x2,y2,conf,class] em pixels. JNI causa crash!
         val isE2E = outWidth == 6 && outHeight in 200..500
 
         val resultBoxes = if (isE2E) {
             postprocessE2E(rawOutput[0], confidenceThreshold, numItemsThreshold)
         } else {
-            for (i in 0 until outHeight) {
-                for (j in 0 until outWidth) {
-                    predictions[j][i] = rawOutput[0][i][j]
-                }
-            }
-            postprocess(predictions, outHeight, outWidth, confidenceThreshold, iouThreshold, numItemsThreshold, labels.size)
+            // JNI postprocess expects [channels][num_preds] where:
+            // - channels = 4 + num_classes
+            // - num_preds = number of candidate boxes
+            // rawOutput[0] is already in this layout for common YOLO TFLite exports.
+            postprocess(rawOutput[0], outWidth, outHeight, confidenceThreshold, iouThreshold, numItemsThreshold, labels.size)
         }
 
         val boxes = mutableListOf<Box>()
@@ -322,30 +388,21 @@ class ObjectDetector(
             val conf = boxArray[4]
             val classIdx = boxArray[5].toInt()
 
-            val left: Float
-            val top: Float
-            val right: Float
-            val bottom: Float
-            if (isE2E) {
+            val rect = if (isE2E) {
                 val x1 = boxArray[0]; val y1 = boxArray[1]
                 val x2 = boxArray[2]; val y2 = boxArray[3]
-                // Ultralytics e2e: coordenadas em espaço do input (pixels) ou 0-1
-                val scaleX = if (x2 <= 1f && y2 <= 1f) origWidth.toFloat() else origWidth / mw
-                val scaleY = if (x2 <= 1f && y2 <= 1f) origHeight.toFloat() else origHeight / mh
-                left = (x1 * scaleX).coerceIn(0f, origWidth.toFloat())
-                top = (y1 * scaleY).coerceIn(0f, origHeight.toFloat())
-                right = (x2 * scaleX).coerceIn(0f, origWidth.toFloat())
-                bottom = (y2 * scaleY).coerceIn(0f, origHeight.toFloat())
+                mapLetterboxE2EToOriginal(x1, y1, x2, y2, origWidth, origHeight, lb)
             } else {
-                val x1 = boxArray[0]; val y1 = boxArray[1]
-                val x2 = boxArray[2]; val y2 = boxArray[3]
-                left = (x1 * origWidth).coerceIn(0f, origWidth.toFloat())
-                top = (y1 * origHeight).coerceIn(0f, origHeight.toFloat())
-                right = (x2 * origWidth).coerceIn(0f, origWidth.toFloat())
-                bottom = (y2 * origHeight).coerceIn(0f, origHeight.toFloat())
+                // JNI: [x, y, width, height] normalized to letterboxed input tensor (xywh, top-left + size).
+                val x = boxArray[0]; val y = boxArray[1]
+                val w = boxArray[2]; val h = boxArray[3]
+                mapLetterboxNormXywhToOriginal(x, y, w, h, origWidth, origHeight, lb)
             }
 
-            val rect = RectF(left, top, right, bottom)
+            val left = rect.left
+            val top = rect.top
+            val right = rect.right
+            val bottom = rect.bottom
             val normRect = RectF(left / origWidth, top / origHeight, right / origWidth, bottom / origHeight)
 
             if (rect.width() > 1f && rect.height() > 1f) {
@@ -367,10 +424,9 @@ class ObjectDetector(
             names = labels
         )
     }
-    // Thresholds (like setConfidenceThreshold, setIouThreshold in TFLiteDetector)
-    private var confidenceThreshold = 0.25f
-    private var iouThreshold = 0.4f
-//    private var numItemsThreshold = 30
+    // Defaults aligned with Ultralytics COCO-style predict (conf=0.001, iou NMS=0.7, max_det=300).
+    private var confidenceThreshold = 0.001f
+    private var iouThreshold = 0.7f
 
     override fun setConfidenceThreshold(conf: Double) {
         confidenceThreshold = conf.toFloat()
@@ -419,15 +475,8 @@ class ObjectDetector(
 
     companion object {
         private const val TAG = "ObjectDetector"
-        // Load JNI library
         init {
             System.loadLibrary("ultralytics")
         }
-        private const val INPUT_MEAN = 0f
-        private const val INPUT_STANDARD_DEVIATION = 255f
-        private val INPUT_IMAGE_TYPE = DataType.FLOAT32
-        private val OUTPUT_IMAGE_TYPE = DataType.FLOAT32
-        private const val CONFIDENCE_THRESHOLD = 0.25F
-        private const val IOU_THRESHOLD = 0.4F
     }
 }

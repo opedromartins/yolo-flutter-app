@@ -9,13 +9,12 @@ import '../../services/model_manager.dart';
 
 class BenchmarkController extends ChangeNotifier {
   static const benchmarkModels = [
+    ModelType.yolo11nFloat16,
     ModelType.detect, // exp_yolo26m_epi_negative_float32
-    ModelType.customFloat32,
-    ModelType.customFloat16,
-    ModelType.customInt8,
+    ModelType.detectFloat16,
   ];
 
-  ModelType _selectedModel = ModelType.customFloat32;
+  ModelType _selectedModel = ModelType.yolo11nFloat16;
   List<XFile> _selectedImages = [];
   bool _isModelLoading = false;
   bool _isRunning = false;

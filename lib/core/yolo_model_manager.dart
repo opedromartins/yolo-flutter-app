@@ -35,7 +35,7 @@ class YOLOModelManager {
        _useGpu = useGpu,
        _classifierOptions = classifierOptions,
        _viewId = viewId,
-       _numItemsThreshold = numItemsThreshold ?? 30;
+       _numItemsThreshold = numItemsThreshold ?? 300;
 
   Future<void> initializeInstance() async {
     try {

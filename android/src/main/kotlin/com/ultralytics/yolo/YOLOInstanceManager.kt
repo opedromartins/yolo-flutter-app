@@ -76,7 +76,7 @@ object YOLOInstanceManager {
         modelPath: String,
         task: YOLOTask,
         useGpu: Boolean = true,
-        numItemsThreshold: Int = 30,
+        numItemsThreshold: Int = 300,
         classifierOptions: Map<String, Any>?,
         callback: (Result<Unit>) -> Unit
     ) {

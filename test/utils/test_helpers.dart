@@ -279,9 +279,9 @@ class YOLOTestHelpers {
       'task': task.name,
       'modelPath': 'assets/models/yolo11n.tflite',
       'useGpu': true,
-      'confidenceThreshold': 0.5,
-      'iouThreshold': 0.45,
-      'numItemsThreshold': 30,
+      'confidenceThreshold': 0.001,
+      'iouThreshold': 0.7,
+      'numItemsThreshold': 300,
     };
   }
 

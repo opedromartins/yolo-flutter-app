@@ -24,7 +24,7 @@ class YOLO(
     val task: YOLOTask,
     private val labels: List<String> = emptyList(),
     private val useGpu: Boolean = true,
-    private var numItemsThreshold: Int = 30,
+    private var numItemsThreshold: Int = 300,
     private val classifierOptions: Map<String, Any>? = null
 ) {
     private val TAG = "YOLO"

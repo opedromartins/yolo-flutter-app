@@ -97,7 +97,7 @@ class YOLO {
       _instanceId = 'default';
     }
 
-    this.numItemsThreshold = numItemsThreshold ?? 30;
+    this.numItemsThreshold = numItemsThreshold ?? 300;
 
     _initializeComponents();
   }
@@ -215,7 +215,7 @@ class YOLO {
   /// ```
   ///
   /// [imageBytes] The raw image data as a Uint8List
-  /// [confidenceThreshold] Optional confidence threshold (0.0-1.0). Defaults to 0.25 if not specified.
+  /// [confidenceThreshold] Optional confidence threshold (0.0-1.0). Defaults to 0.001 (COCO-eval style) if not specified.
   /// [iouThreshold] Optional IoU threshold for NMS (0.0-1.0). Defaults to 0.4 if not specified.
   /// returns A map containing:
   ///   - 'boxes': List of bounding boxes
